@@ -264,13 +264,13 @@ Runtime 不得根据错误类别替 Agent 选择以上任一业务动作。Runti
 | `permission` | 调用所需的身份、隔离和确认边界。 |
 | `idempotency` | 重放时如何避免重复副作用。 |
 | `precondition` | 执行前必须成立的版本、状态或上下文条件。 |
-| `error semantics` | 可能返回的结构化结果类别及其事实含义，不指定下一步。 |
+| `error semantics` | 可能出现的失败或不确定情形及其事实含义（见 §10），不指定下一步。 |
 
 所有输入必须在系统边界校验。所有持久数据必须按用户或等价安全边界隔离。
 
 有副作用工具输入中的"幂等身份"不是由 Agent 任意生成的最终键。Agent 只表达副作用意图；Runtime 必须根据稳定 Trigger 身份、工具名、规范化目标和意图作用域派生或签发最终幂等键。
 
-以下取消和超时规则适用于本节全部工具：只读工具在取消或超时时必须返回明确无副作用的结果；有副作用工具若能确认在提交前取消或超时，返回 `no_side_effect_retryable`，一旦进入提交边界且无法确认结果，则返回 `outcome_unknown`。Run 预算耗尽不得把正在执行的调用改写为明确失败。
+以下取消和超时规则适用于本节全部工具：只读工具在取消或超时时必须说明确认没有副作用；有副作用工具若能确认在提交前取消或超时，必须说明确认未发生、可以安全重试，一旦进入提交边界且无法确认结果，则必须说明结果不明、需要先查询现状（见 §10.2）。Run 预算耗尽不得把正在执行的调用改写成一句听起来像明确失败的话。
 
 ### 7.2 最小工具面
 
@@ -309,7 +309,7 @@ Agent 应当遵守（但 Runtime 不强制）一条自律规则：**`idea` 与 `
 - **permission**：只能搜索当前用户或等价授权边界内的未遗忘内容。
 - **idempotency**：相同快照与相同查询可以重复执行，不产生持久副作用；不保证排序在数据变化后保持不变。
 - **precondition**：调用者具有搜索权限；查询和边界合法。
-- **error semantics**：空结果是成功；可返回 `rejected`、`no_side_effect_retryable` 或 `permanent_failure`。不得用未找到的内容填充猜测结果。
+- **error semantics**：空结果是成功。查询被拒绝、参数不合法或底层能力不可用时，用 `isError: true` 加清楚的失败原因说明；只读工具不需要区分"可重试"和"结果未知"，Agent 自行判断是否换查询或重试。不得用未找到的内容填充猜测结果。
 
 ### 8.3 `memory.read`
 
@@ -321,7 +321,7 @@ Agent 应当遵守（但 Runtime 不强制）一条自律规则：**`idea` 与 `
 - **permission**：只能读取当前用户或等价授权边界内的未遗忘内容。
 - **idempotency**：对同一版本重复读取返回等价事实，不产生持久副作用。
 - **precondition**：引用合法且可见；如请求指定版本，该版本必须允许读取。
-- **error semantics**：可以逐引用返回 `succeeded`、`not_found` 或 `rejected`；历史已遗忘不得通过错误详情泄露原内容。
+- **error semantics**：可以逐引用说明成功、未找到或被拒绝，用自然语言表达即可；历史已遗忘不得通过错误详情泄露原内容。
 
 ### 8.4 `memory.remember`
 
@@ -333,7 +333,7 @@ Agent 应当遵守（但 Runtime 不强制）一条自律规则：**`idea` 与 `
 - **permission**：必须在用户数据边界内写入；超出既有用户授权或产品政策的高敏感持久化需要确认。
 - **idempotency**：相同 Trigger 派生的相同记忆意图必须使用稳定幂等身份；重放不得创建重复记忆。
 - **precondition**：来源和认识论类型必须存在；不得把 Agent 推断保存成用户陈述；幂等身份合法。
-- **error semantics**：返回 `succeeded`、`already_applied`、`rejected`、`precondition_failed`、`no_side_effect_retryable`、`outcome_unknown` 或 `permanent_failure`。`outcome_unknown` 时不得盲目创建第二份记忆。
+- **error semantics**：按 §10.2 的要求说明保存是否已确认发生（含幂等命中已有记忆的情形）、是否确认未发生可安全重试，或结果不明需要先用 `memory.search`/`memory.read` 查询现状。结果不明时不得盲目创建第二份记忆。
 
 ### 8.5 `memory.revise`
 
@@ -345,7 +345,7 @@ Agent 应当遵守（但 Runtime 不强制）一条自律规则：**`idea` 与 `
 - **permission**：必须有目标记忆的写权限；用户纠正不得被 Agent 的旧推断覆盖。
 - **idempotency**：同一修订意图和幂等身份重放不得重复产生版本或关系。
 - **precondition**：目标存在且未遗忘；期望版本仍为当前版本或满足等价前置条件。
-- **error semantics**：版本过期返回 `precondition_failed` 并仅报告当前事实；还可返回 `not_found`、`rejected`、`no_side_effect_retryable`、`outcome_unknown` 或 `permanent_failure`。不得指定 Agent 下一步必须重读或重试。
+- **error semantics**：版本过期时，说明前置条件不成立并只报告当前事实（修订未确认发生，可安全重新读取后重试）；目标未找到、被拒绝或结果不明时，按 §10.2 的要求说明清楚。不得指定 Agent 下一步必须重读或重试，只需把事实说清楚。
 
 ### 8.6 `memory.forget`
 
@@ -355,9 +355,9 @@ Agent 应当遵守（但 Runtime 不强制）一条自律规则：**`idea` 与 `
 - **output**：已遗忘或先前已遗忘的范围、完成状态、被处理的派生索引/摘要和关联 Wake 的非敏感计数或引用。
 - **side_effect**：`high_impact`，通常不可逆。
 - **permission**：必须验证用户身份、数据范围和产品政策要求的确认；Agent 不得因风险判断代替用户授权。
-- **idempotency**：重复遗忘同一范围返回 `already_applied`，不得重新暴露内容。
+- **idempotency**：重复遗忘同一范围时说明"先前已遗忘"，不得重新暴露内容。
 - **precondition**：范围可明确解析；若提供版本，版本必须满足前置条件。
-- **error semantics**：返回 `succeeded`、`already_applied`、`rejected`、`precondition_failed`、`not_found`、`no_side_effect_retryable`、`outcome_unknown` 或 `permanent_failure`。
+- **error semantics**：按 §10.2 的要求说明遗忘是否已确认发生、目标是否可解析、还是结果不明。
 
 遗忘必须覆盖原内容、普通索引、派生摘要、标签索引和关联 Wake。遗忘后，普通检索、历史恢复和旧 Wake 都不得重新暴露原内容。
 
@@ -377,7 +377,7 @@ Wake 只服务事务性重评，不服务灵感场景（见 §4.1）。
 - **permission**：只能列出当前用户或等价授权边界内的 Wake。
 - **idempotency**：重复查询不产生持久副作用；数据变化时结果可以变化。
 - **precondition**：过滤条件合法且调用者具有读取权限。
-- **error semantics**：空列表是成功；可返回 `rejected`、`no_side_effect_retryable` 或 `permanent_failure`。
+- **error semantics**：空列表是成功；查询被拒绝或底层能力不可用时用 `isError: true` 加清楚的说明，只读工具不需要区分错误子类型。
 
 ### 9.2 `wake.schedule`
 
@@ -389,7 +389,7 @@ Wake 只服务事务性重评，不服务灵感场景（见 §4.1）。
 - **permission**：必须符合用户的提醒授权和打扰约束；未知时区时不得静默安排绝对时间。
 - **idempotency**：相同 Wake Intent 和稳定幂等身份重放不得产生重复 Wake。
 - **precondition**：时间表达可被安全解释；必要时区已知；恢复上下文不得引用已遗忘内容；计划不得违反已提交取消或不提醒约束。替换已有 Wake 时，目标版本和调度代次必须仍为当前值，替换与旧代次失效必须原子提交。
-- **error semantics**：返回 `succeeded`、`already_applied`、`rejected`、`precondition_failed`、`no_side_effect_retryable`、`outcome_unknown` 或 `permanent_failure`。调度结果未知时不得盲目安排第二个 Wake。
+- **error semantics**：按 §10.2 的要求说明调度或替换是否已确认发生（含幂等命中已有 Wake 的情形）、是否确认未发生可安全重试，或结果不明需要先用 `wake.list` 查询现状。结果不明时不得盲目安排第二个 Wake。
 
 Wake 到期只表示"请重新判断"。Agent 醒来后可以提醒、延期、静默或结束，不得由 Runtime 固定发送旧文案。
 
@@ -401,32 +401,27 @@ Wake 到期只表示"请重新判断"。Agent 醒来后可以提醒、延期、�
 - **output**：已取消或先前已取消的 Wake 引用、当前版本、失效调度代次和可确认的竞态结果。
 - **side_effect**：`reversible`，但立即收紧未来可见效果权限。
 - **permission**：必须有目标 Wake 的取消权限；用户明确取消不得被风险判断绕过。
-- **idempotency**：重复取消返回 `already_applied`，不得恢复旧调度。
+- **idempotency**：重复取消时说明"先前已取消"，不得恢复旧调度。
 - **precondition**：目标引用可解析；如指定版本或代次，必须仍满足前置条件。
-- **error semantics**：返回 `succeeded`、`already_applied`、`not_found`、`rejected`、`precondition_failed`、`no_side_effect_retryable`、`outcome_unknown` 或 `permanent_failure`。若取消先于用户可见效果提交，旧 Run 的效果提交必须失败。
+- **error semantics**：按 §10.2 的要求说明取消是否已确认发生、目标是否可解析、还是结果不明。若取消先于用户可见效果提交，旧 Run 的效果提交必须失败。
 
 ## 十、Tool Call 与 Tool Result
 
-### 10.1 Tool Result 最小分类
+### 10.1 Tool Result 的表达方式
 
-| 分类 | 含义 |
-|---|---|
-| `succeeded` | 请求已成功执行，输出是当前可确认事实。 |
-| `already_applied` | 相同幂等操作先前已成功应用，本次未产生重复副作用。 |
-| `rejected` | 因输入、权限、确认或硬约束被拒绝；未产生请求的副作用。 |
-| `precondition_failed` | 版本、状态或并发前置条件不成立；不得覆盖新状态。 |
-| `not_found` | 在调用者可见范围内未找到目标；不得借错误泄露不可见内容。 |
-| `no_side_effect_retryable` | 明确未产生副作用，底层失败可重试。是否重试由 Agent 决定。 |
-| `outcome_unknown` | 无法确认副作用是否已提交；必须先查询现状，不能盲目重复。 |
-| `permanent_failure` | 当前能力无法完成请求，且同样调用不应被当作临时失败重试。 |
+Tool Result 不要求固定的分类枚举。成功和失败都可以用自然语言表达——LLM 最终看到的始终是文本，一个正式的分类字段并不会比一句写清楚的话带来更多机器可读的价值。只读工具（`memory.search`/`memory.read`/`wake.list`）的失败，用 `isError: true` 加一句人类可读的说明即可，是否重试、换查询、换工具完全交给 Agent 判断，Runtime 不需要额外区分错误子类型。
 
-### 10.2 Tool Result 共同事实
+### 10.2 有副作用工具的强制行为要求
 
-每个 Tool Result 至少携带：对应 Tool Call 身份；工具名；结果分类；结构化数据或机器可读错误事实；是否确认产生副作用；可确认时的资源引用和当前版本；对有副作用调用，由 Runtime 签发的最终幂等键或可精确查询的操作回执；面向 Agent 的事实性说明。
+只有对五个有副作用工具（`memory.remember`、`memory.revise`、`memory.forget`、`wake.schedule`、`wake.cancel`）例外：无论成功还是失败，返回内容必须**明确说明副作用是否已确认发生**，因为这直接决定 Agent 该不该重试。这是行为要求，不是格式要求——不需要固定字符串或枚举值，但必须让 Agent 能读出以下三种事实中的哪一种：
 
-Tool Result 不得携带"建议下一步调用某工具"或由 Runtime 生成的业务计划。
+- **确认已生效**（包括幂等重复：本次调用命中了此前已成功的同一操作，未产生新的重复副作用）；
+- **确认未生效，可以安全重试**（例如输入被拒绝、权限不足、前置条件不成立——这些情形从未进入提交边界）；
+- **无法确认是否生效**（例如提交边界内发生超时或系统失败）——此时返回内容必须同时给出一种可查询的方式（例如可供 `memory.search` 或 `wake.list` 查询的幂等身份或操作引用），让 Agent 能先确认现状，而不是凭感觉重试。
 
-超时不等于明确失败。若 Runtime 无法证明副作用未发生，必须返回 `outcome_unknown`，并同时返回可供 `memory.search` 或 `wake.list` 精确查询的操作回执或最终幂等键。预算耗尽也不得抹去已经开始的调用所处的结果未知状态。
+超时本身不等于"确认未生效"。工具实现者必须能区分"提交边界之前失败"和"提交边界之内、结果不明"这两种情况，并按上面的规则分别措辞。预算耗尽不得把一个已经开始、结果不明的调用重写成一句听起来像明确失败的话。
+
+Tool Result 不得携带"建议下一步调用某工具"或由 Runtime 生成的业务计划——是否重试、换查询、追问用户，仍然是 Agent 的判断，Runtime 只负责把事实说清楚。
 
 ## 十一、Execution Budget
 
@@ -673,7 +668,7 @@ Agent 读取一条历史 `idea` 记忆，判断其性质已变为事项，调用
 4. Runtime 不规划业务步骤，不判断风险、相关性、打扰价值，也不理解任何标签字符串的业务含义。
 5. 一次 Model Turn 可以有多个 Tool Call；每个调用必须有对应 Tool Result。
 6. 同轮全部 Tool Result 必须一并返回 Agent。
-7. Tool Result 必须结构化区分明确失败与结果未知。
+7. 有副作用工具的 Tool Result 必须用自然语言清楚区分"确认未发生"与"结果不明"，不要求固定分类枚举。
 8. Tool timeout 不能被解释为副作用一定未发生。
 9. Execution Budget 是硬边界，耗尽不得伪装为完成。
 10. Run Stop 是稳定领域语义，不是模型供应商协议的复制。
