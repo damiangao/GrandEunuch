@@ -15,11 +15,9 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ai-sdk/react": "^4.0.44",
     "@ducanh2912/next-pwa": "^10.2.9",
     "@earendil-works/pi-agent-core": "0.80.10",
     "@earendil-works/pi-ai": "0.80.10",
-    "ai": "^7.0.41",
     "next": "^15.5.22",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
