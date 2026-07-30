@@ -2,11 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Repository status
+## Status
 
-This repository currently contains only a design/contract document. No application source, package manifest, build configuration, test framework, or lint configuration exists yet.
-
-Do not assume a language, framework, package manager, directory layout, or development command. Derive these from committed project files once implementation starts, then update this document.
+MVP working end-to-end. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted to `conversation_messages` → restored on refresh. 10 vitest tests pass. Not yet implemented: Run Coordinator/Execution Budget, the 12-case Eval harness, Playwright E2E — see `docs/GRAND_EUNUCH.md` and the plan for what's left.
 
 ## Documents
 
@@ -68,10 +66,88 @@ These constraints must hold in any implementation, regardless of chosen stack:
 
 Acceptance criteria constrain final **Outcome** and **hard constraints**, never a specific tool call sequence, tool count, or "must call X before Y" ordering. The spec's twelve-case Eval dataset (§14) is the reference format: each Eval defines input, existing memory, user preference, current time, allowed outcomes, forbidden behaviors, and hard-constraint checks — not a golden trajectory. For idea-related Evals specifically, the `outcome_correct` scoring dimension is always `not_applicable` — there is no correct creative direction to score against.
 
-## Development commands
+## Commands
 
-There are currently no project commands for development, build, lint, test, or running a single test. Add commands here only after their corresponding configuration is committed.
+```bash
+npm install
+npm run typecheck                               # tsc --noEmit
+npm test                                        # vitest run
+npm run build                                   # next build (production PWA)
+npm run build:runtime                           # tsc -p tsconfig.build.json -> dist/ (Runtime-only, no Next.js)
+node --env-file=.env scripts/check-llm.ts       # verify LLM connectivity
+node --env-file=.env scripts/repl.ts            # interactive agent REPL
+```
+
+### Running the local server
+
+`scripts/serve.sh` manages the server as a detached background process, which is
+how it should normally be run: wakes only fire while it is up, so a foreground
+`npm run dev` tied to a terminal session means missed reminders.
+
+```bash
+./scripts/serve.sh start          # build + start detached (production)
+./scripts/serve.sh start --dev    # start detached in dev mode (hot reload, no build)
+./scripts/serve.sh restart        # restart; accepts --dev too
+./scripts/serve.sh stop
+./scripts/serve.sh status
+./scripts/serve.sh logs           # tail -f the server log
+PORT=3100 ./scripts/serve.sh start
+```
+
+State lives in the gitignored `.run/` (`server.log`, `build.log`, `server.pid`,
+`mode`). `npm run dev`/`npm start` still work for a foreground session.
+
+## Environment
+
+Copy `.env.example` to `.env` (gitignored) and set:
+
+- `LLM_BASE_URL` — base URL of the LLM endpoint
+- `LLM_API_KEY` — API key
+- `LLM_MODEL` — model id the endpoint expects (e.g. a MiniMax model id — the endpoint speaks Anthropic's or OpenAI's wire format but is not necessarily backed by an actual Claude/OpenAI model; don't assume vendor-specific capabilities/limits)
+- `LLM_API_FORMAT` — `anthropic` (`/v1/messages`, default), `openai` (`/v1/chat/completions`), or `openai-responses` (`/v1/responses`); must match the wire format the endpoint actually speaks, not the model's origin vendor
+- `DB_PATH` — SQLite file path (default `./data/kokanee.sqlite`); directory is created if missing
+
+Requires Node.js >= 22.13 (unflagged `node:sqlite`).
 
 ## Architecture
 
-No application architecture or cross-file data flow exists yet. Document module boundaries and data flows here once they can be verified from the implementation. Any future architecture must satisfy the spec's invariants (docs/GRAND_EUNUCH.md §16) simultaneously.
+```
+src/llm/provider.ts       Builds the Model + API key resolver for the configured LLM endpoint.
+                           getLlmModel()/setupModels() are for direct pi-ai Models usage
+                           (scripts/check-llm.ts); getLlmApiKey() is for pi-agent-core's
+                           Agent, which resolves auth via a getApiKey(provider) callback
+                           instead of the Models/createProvider registration path.
+src/persistence/sqlite.ts SQLite factory (node:sqlite) + transactional, self-healing migrations.
+src/memory/repository.ts  SqliteMemoryRepository: remember/read/revise (CAS)/forget/search.
+src/memory/service.ts     MemoryService: two-click forget confirmation tokens.
+src/memory/tools.ts       memory__search/read/remember/revise/forget AgentTool definitions.
+src/wake/repository.ts    SqliteWakeRepository: schedule/cancel/claimDueOccurrences/resolveOccurrence.
+src/wake/scheduler.ts     LocalWakeScheduler: scans + claims overdue wakes once on restart.
+src/wake/tools.ts         wake__list/schedule/cancel AgentTool definitions.
+src/conversation/repository.ts   SqliteConversationRepository: persisted chat history (user/assistant/reminder).
+src/runtime/local-runtime.ts     Wires the local-owner/default-conversation SQLite singletons used by all tools.
+src/runtime/agent-runtime.ts     Per-run Agent factory + streaming callback, used by the Route Handler.
+src/agent/system-prompt.ts   System prompt text.
+src/agent/create-agent.ts    Wires model + all 8 tools + system prompt into an Agent instance.
+app/page.tsx                 Client chat UI: loads history, streams replies, optimistic send.
+app/api/conversations/default/route.ts            GET persisted conversation history.
+app/api/conversations/default/messages/route.ts   POST a message, streams the agent reply, persists it.
+next.config.ts            webpack extensionAlias (see Gotchas) + @ducanh2912/next-pwa setup.
+scripts/check-llm.ts     One-shot LLM connectivity check.
+scripts/repl.ts          Interactive terminal REPL against the agent.
+```
+
+Any future architecture must satisfy the spec's invariants (docs/GRAND_EUNUCH.md §16) simultaneously.
+
+## Gotchas
+
+- **Tool names cannot contain dots.** The spec writes tool names as `memory.remember`, but the underlying model API restricts tool names to `[a-zA-Z0-9_-]`. Implementation uses double underscores instead (`memory__remember`, `memory__search`) — apply the same convention for the remaining six tools.
+- **`model.baseUrl` is what pi-ai actually dispatches to, not `provider.baseUrl`.** `provider.baseUrl` passed to `createProvider()` is effectively inert for request dispatch — each `Model` object needs its own `baseUrl` set. Getting this wrong silently routes requests to the wrong endpoint instead of erroring.
+- **`pi-agent-core`'s `Agent` bypasses the `pi-ai` `Models`/`createProvider` registration entirely.** Its default `streamFn` resolves the API key via the `getApiKey(provider)` option and reads `baseUrl`/`api` straight off the `Model` object — it never touches `createModels()`/`setProvider()`. That registration path is only needed for direct `pi-ai` usage (see `setupModels()` in `src/llm/provider.ts`, used by `scripts/check-llm.ts`).
+- **OpenAI-format compat settings are auto-detected from `model.provider` name and `baseUrl`.** When `LLM_API_FORMAT=openai`, pi-ai's `openai-completions` API picks tool-calling format, streaming quirks, etc. based on known provider/URL patterns (OpenRouter, Together, Moonshot, etc.). A generic endpoint URL won't match any pattern and falls back to standard OpenAI behavior — that's usually correct, but if your endpoint has quirks (non-standard tool-call format, streaming differences), set `model.compat` explicitly in `src/llm/provider.ts` rather than relying on auto-detection.
+- **`openai-responses` here means the standard `/v1/responses` API, not OpenAI Codex/ChatGPT.** pi-ai also ships a separate `openai-codex-responses` API for ChatGPT-OAuth-based Codex access (JWT-derived account id, hardcoded `chatgpt.com` backend, WebSocket/SSE dual transport) — that is a different, account-bound protocol and is intentionally not wired up here. `LLM_API_FORMAT=openai-responses` only covers the plain API-key-authenticated Responses endpoint.
+- **Next.js/webpack won't resolve the NodeNext `.js`-import convention used across `src/`** (files there import sibling `.ts` files as `./foo.js`, required by `tsconfig.json`'s `NodeNext`-style resolution for the standalone `build:runtime` output). `next.config.ts` sets `config.resolve.extensionAlias = { ".js": [".ts", ".tsx", ".js"] }` to bridge this for the Next.js build — remove it only if `src/**` imports switch to extensionless.
+- **`tsconfig.json` uses `module`/`moduleResolution: "esnext"/"bundler"`, not `NodeNext`, even though `src/**` uses NodeNext-style `.js` imports.** Next.js's own type declarations (`next/server`, etc.) aren't resolvable under `NodeNext` moduleResolution in this setup; `bundler` is required for `app/**` to typecheck. `lib` also needs `DOM`/`DOM.Iterable` for `app/*.tsx` (React DOM element types) alongside `ES2022`.
+- **In `scripts/serve.sh`, the listening process on `$PORT` is the source of truth, not the recorded PID.** The server is launched via `nohup npx ...`, so `$!` is the `npx` wrapper, not the Next.js server — `kill`ing or `kill -0`ing it gives wrong answers. `running_pid()` resolves the real process with `lsof -ti :$PORT -sTCP:LISTEN`, and `stop` derives the process group via `ps -o pgid=` so Next's child workers die too. macOS has no `setsid`, hence `nohup` + `disown`.
+- **Next.js does not need `--env-file`** — it loads `.env` itself (the startup banner prints `Environments: .env`). Only the standalone `scripts/*.ts` entry points need `node --env-file=.env`.
+- **`@ducanh2912/next-pwa` must be wired into `next.config.ts` via `withPWAInit()`** — just having it in `package.json` doesn't generate `public/sw.js`. It's disabled in development (`disable: process.env.NODE_ENV === "development"`) so `npm run dev` won't produce a service worker; check `npm run build && npm start` for the PWA/installability path.

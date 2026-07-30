@@ -1,0 +1,9 @@
+{
+  "name": "大内总管",
+  "short_name": "大内总管",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f5f1",
+  "theme_color": "#1f4d3b",
+  "lang": "zh-CN"
+}
