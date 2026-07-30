@@ -1,12 +1,6 @@
 import { newId } from "../persistence/id.js";
 import type { SqliteMemoryRepository } from "./repository.js";
 
-interface ForgetConfirmation {
-  principalId: string;
-  memoryId: string;
-  expiresAt: number;
-}
-
 export interface ForgetConfirmationRequest {
   principalId: string;
   memoryId: string;
@@ -27,7 +21,7 @@ export class MemoryConfirmationRequiredError extends Error {
 }
 
 export class MemoryService {
-  private readonly confirmations = new Map<string, ForgetConfirmation>();
+  private readonly confirmations = new Map<string, ForgetConfirmationRequest>();
 
   constructor(private readonly repository: SqliteMemoryRepository) {}
 

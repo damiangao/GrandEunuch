@@ -20,7 +20,6 @@ export interface WakeOccurrence {
 
 export interface VisibleEffect {
   id: string;
-  kind: string;
   content: string;
   committedAt: number;
 }
@@ -253,20 +252,17 @@ export class SqliteWakeRepository {
   }
 
   listVisibleEffects(input: { principalId: string; conversationId: string }): VisibleEffect[] {
+    // The kind column is still written for audit, but the read model has no use
+    // for it while 'reminder' is the only effect kind.
     const rows = this.connection
       .prepare(
-        `SELECT id, kind, content, committed_at FROM visible_effects
+        `SELECT id, content, committed_at FROM visible_effects
          WHERE principal_id = ? AND conversation_id = ?
          ORDER BY committed_at ASC`
       )
-      .all(input.principalId, input.conversationId) as unknown as Array<{
-      id: string;
-      kind: string;
-      content: string;
-      committed_at: number;
-    }>;
+      .all(input.principalId, input.conversationId) as unknown as VisibleEffectRow[];
 
-    return rows.map((row) => ({ id: row.id, kind: row.kind, content: row.content, committedAt: row.committed_at }));
+    return rows.map(rowToVisibleEffect);
   }
 }
 
@@ -278,6 +274,12 @@ interface WakeIntentRow {
   planned_at: number;
   timezone: string;
   intent_context: string;
+}
+
+interface VisibleEffectRow {
+  id: string;
+  content: string;
+  committed_at: number;
 }
 
 interface WakeOccurrenceRow {
@@ -297,6 +299,10 @@ function rowToWakeIntent(row: WakeIntentRow): WakeIntent {
     timezone: row.timezone,
     intentContext: row.intent_context,
   };
+}
+
+function rowToVisibleEffect(row: VisibleEffectRow): VisibleEffect {
+  return { id: row.id, content: row.content, committedAt: row.committed_at };
 }
 
 function rowToOccurrence(row: WakeOccurrenceRow): WakeOccurrence {

@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-MVP working end-to-end. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted to `conversation_messages` → restored on refresh. 10 vitest tests pass. Not yet implemented: Run Coordinator/Execution Budget, the 12-case Eval harness, Playwright E2E — see `docs/GRAND_EUNUCH.md` and the plan for what's left.
+MVP working end-to-end, verified in a browser. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted → restored on refresh. Wakes are reliable end to end: due-scan → real Agent reassessment → atomic commit → reminder merged into the conversation timeline. 31 vitest tests pass; `npm run typecheck` and `npm run build` are clean.
+
+Not yet implemented: Run Coordinator / Execution Budget ceilings, the 12-case Eval harness (spec §14), Playwright E2E. Timezone is hardcoded to `Asia/Shanghai`. In-app reminders only — no Web Push.
 
 ## Documents
 
@@ -117,22 +119,40 @@ src/llm/provider.ts       Builds the Model + API key resolver for the configured
                            (scripts/check-llm.ts); getLlmApiKey() is for pi-agent-core's
                            Agent, which resolves auth via a getApiKey(provider) callback
                            instead of the Models/createProvider registration path.
-src/persistence/sqlite.ts SQLite factory (node:sqlite) + transactional, self-healing migrations.
+src/persistence/sqlite.ts SQLite factory (node:sqlite) + transactional, self-healing migrations,
+                           plus an idempotent column-addition pass (ALTER TABLE can't live in
+                           the re-executed migration list).
+src/persistence/id.ts     newId(): globalThis.crypto.randomUUID — NOT node:crypto (see Gotchas).
 src/memory/repository.ts  SqliteMemoryRepository: remember/read/revise (CAS)/forget/search.
 src/memory/service.ts     MemoryService: two-click forget confirmation tokens.
 src/memory/tools.ts       memory__search/read/remember/revise/forget AgentTool definitions.
-src/wake/repository.ts    SqliteWakeRepository: schedule/cancel/claimDueOccurrences/resolveOccurrence.
-src/wake/scheduler.ts     LocalWakeScheduler: scans + claims overdue wakes once on restart.
+src/wake/repository.ts    SqliteWakeRepository: schedule/cancel/claim/resolveOccurrence. resolveOccurrence
+                           is the internal atomic boundary — at most one visible effect (or one silent
+                           decision) per occurrence — and retires the wake to 'fired' in the same
+                           transaction. Never exposed as an Agent tool (spec §12.4).
+src/wake/scheduler.ts     LocalWakeScheduler: scans + claims due wakes, including ones missed while down.
+src/wake/runner.ts        WakeRunner: per-occurrence scheduled_wake Run; asks the Agent, transports the
+                           decision to the atomic boundary. A failed reassessment stays unresolved for a
+                           later retry rather than being decided on the Agent's behalf.
+src/wake/wake-run-prompt.ts  buildWakeRunPrompt + toDecision. Deliberately free of Agent imports so
+                           its tests don't trigger local-runtime's module-level SQLite init.
+src/wake/agent-reassessor.ts Runs a real Agent against that prompt.
+src/wake/local-time.ts    Asia/Shanghai wall-clock <-> epoch. Rejects timezone-qualified input and
+                           dates Date.UTC would silently roll over.
 src/wake/tools.ts         wake__list/schedule/cancel AgentTool definitions.
-src/conversation/repository.ts   SqliteConversationRepository: persisted chat history (user/assistant/reminder).
+src/conversation/repository.ts   SqliteConversationRepository: persisted chat history.
+src/conversation/timeline.ts     readTimeline: merges committed wake reminders (from visible_effects,
+                           never double-written) into the message history in time order.
 src/runtime/local-runtime.ts     Wires the local-owner/default-conversation SQLite singletons used by all tools.
 src/runtime/agent-runtime.ts     Per-run Agent factory + streaming callback, used by the Route Handler.
-src/agent/system-prompt.ts   System prompt text.
+src/runtime/wake-loop.ts         Idempotent startup scan + 30s polling, started lazily by the GET handler.
+src/agent/system-prompt.ts   System prompt + buildTrustedTimeSection (required — see Gotchas).
 src/agent/create-agent.ts    Wires model + all 8 tools + system prompt into an Agent instance.
-app/page.tsx                 Client chat UI: loads history, streams replies, optimistic send.
-app/api/conversations/default/route.ts            GET persisted conversation history.
+app/page.tsx                 Client chat UI: history, streaming, optimistic send, 15s reminder poll.
+app/api/conversations/default/route.ts            GET the merged timeline; starts the wake loop.
 app/api/conversations/default/messages/route.ts   POST a message, streams the agent reply, persists it.
 next.config.ts            webpack extensionAlias (see Gotchas) + @ducanh2912/next-pwa setup.
+scripts/serve.sh         Background server management (start/stop/restart/status/logs).
 scripts/check-llm.ts     One-shot LLM connectivity check.
 scripts/repl.ts          Interactive terminal REPL against the agent.
 ```
@@ -141,13 +161,17 @@ Any future architecture must satisfy the spec's invariants (docs/GRAND_EUNUCH.md
 
 ## Gotchas
 
-- **Tool names cannot contain dots.** The spec writes tool names as `memory.remember`, but the underlying model API restricts tool names to `[a-zA-Z0-9_-]`. Implementation uses double underscores instead (`memory__remember`, `memory__search`) — apply the same convention for the remaining six tools.
+- **Tool names cannot contain dots.** The spec writes tool names as `memory.remember`, but the underlying model API restricts tool names to `[a-zA-Z0-9_-]`. All eight tools use double underscores instead (`memory__remember`, `wake__schedule`, …) — keep that convention for any future tool.
 - **`model.baseUrl` is what pi-ai actually dispatches to, not `provider.baseUrl`.** `provider.baseUrl` passed to `createProvider()` is effectively inert for request dispatch — each `Model` object needs its own `baseUrl` set. Getting this wrong silently routes requests to the wrong endpoint instead of erroring.
 - **`pi-agent-core`'s `Agent` bypasses the `pi-ai` `Models`/`createProvider` registration entirely.** Its default `streamFn` resolves the API key via the `getApiKey(provider)` option and reads `baseUrl`/`api` straight off the `Model` object — it never touches `createModels()`/`setProvider()`. That registration path is only needed for direct `pi-ai` usage (see `setupModels()` in `src/llm/provider.ts`, used by `scripts/check-llm.ts`).
 - **OpenAI-format compat settings are auto-detected from `model.provider` name and `baseUrl`.** When `LLM_API_FORMAT=openai`, pi-ai's `openai-completions` API picks tool-calling format, streaming quirks, etc. based on known provider/URL patterns (OpenRouter, Together, Moonshot, etc.). A generic endpoint URL won't match any pattern and falls back to standard OpenAI behavior — that's usually correct, but if your endpoint has quirks (non-standard tool-call format, streaming differences), set `model.compat` explicitly in `src/llm/provider.ts` rather than relying on auto-detection.
 - **`openai-responses` here means the standard `/v1/responses` API, not OpenAI Codex/ChatGPT.** pi-ai also ships a separate `openai-codex-responses` API for ChatGPT-OAuth-based Codex access (JWT-derived account id, hardcoded `chatgpt.com` backend, WebSocket/SSE dual transport) — that is a different, account-bound protocol and is intentionally not wired up here. `LLM_API_FORMAT=openai-responses` only covers the plain API-key-authenticated Responses endpoint.
 - **Next.js/webpack won't resolve the NodeNext `.js`-import convention used across `src/`** (files there import sibling `.ts` files as `./foo.js`, required by `tsconfig.json`'s `NodeNext`-style resolution for the standalone `build:runtime` output). `next.config.ts` sets `config.resolve.extensionAlias = { ".js": [".ts", ".tsx", ".js"] }` to bridge this for the Next.js build — remove it only if `src/**` imports switch to extensionless.
 - **`tsconfig.json` uses `module`/`moduleResolution: "esnext"/"bundler"`, not `NodeNext`, even though `src/**` uses NodeNext-style `.js` imports.** Next.js's own type declarations (`next/server`, etc.) aren't resolvable under `NodeNext` moduleResolution in this setup; `bundler` is required for `app/**` to typecheck. `lib` also needs `DOM`/`DOM.Iterable` for `app/*.tsx` (React DOM element types) alongside `ES2022`.
+- **Every Run must carry trusted time, or the Agent dates relative requests from its training data.** Without `buildTrustedTimeSection`, "今天17点提醒我" was resolved to 2025-01-25 13:20 — a wake born already-expired, fired instantly, and the user was told "已安排". Relatedly, never ask the model for an epoch timestamp: `wake__schedule` takes a wall-clock string and `src/wake/local-time.ts` converts it, and past times are rejected as "not scheduled, safe to retry" rather than scheduled.
+- **The wake-reassessment prompt's wording decides whether reminders arrive at all.** Phrasing that made silence the safe default ("re-evaluate from scratch whether interrupting is justified") caused the Agent to go silent whenever memory search came up empty — which is most wakes, since scheduling a reminder doesn't imply storing a memory. The prompt must state that delivery is the default and that an empty memory search is not grounds for silence. `src/wake/wake-run-prompt.test.ts` locks these clauses: the prompt is a behavioral contract, not copy.
 - **In `scripts/serve.sh`, the listening process on `$PORT` is the source of truth, not the recorded PID.** The server is launched via `nohup npx ...`, so `$!` is the `npx` wrapper, not the Next.js server — `kill`ing or `kill -0`ing it gives wrong answers. `running_pid()` resolves the real process with `lsof -ti :$PORT -sTCP:LISTEN`, and `stop` derives the process group via `ps -o pgid=` so Next's child workers die too. macOS has no `setsid`, hence `nohup` + `disown`.
+- **Use `newId()` from `src/persistence/id.ts`, never `import { randomUUID } from "node:crypto"`.** Anything reachable from a Route Handler gets bundled by webpack, which refuses `node:`-scheme imports with `UnhandledSchemeError` (and bare `fs`/`crypto` don't resolve either). `globalThis.crypto.randomUUID()` sidesteps it. `node:sqlite` is the exception — it must be loaded via `createRequire`, as it is in `src/persistence/sqlite.ts`.
+- **The wake loop starts lazily from the GET Route Handler, not from `instrumentation.ts`.** A root `instrumentation.ts` is the idiomatic startup hook, but webpack bundles its whole dependency graph and then can't resolve the `node:` builtins underneath SQLite. Lazy start is fine here because the server is only useful once the page has been opened, and `startLocalWakeLoop()` is idempotent.
 - **Next.js does not need `--env-file`** — it loads `.env` itself (the startup banner prints `Environments: .env`). Only the standalone `scripts/*.ts` entry points need `node --env-file=.env`.
 - **`@ducanh2912/next-pwa` must be wired into `next.config.ts` via `withPWAInit()`** — just having it in `package.json` doesn't generate `public/sw.js`. It's disabled in development (`disable: process.env.NODE_ENV === "development"`) so `npm run dev` won't produce a service worker; check `npm run build && npm start` for the PWA/installability path.
