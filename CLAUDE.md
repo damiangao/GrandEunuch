@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-MVP working end-to-end, verified in a browser. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted → restored on refresh. Wakes are reliable end to end: due-scan → real Agent reassessment → atomic commit → reminder merged into the conversation timeline. 31 vitest tests pass; `npm run typecheck` and `npm run build` are clean.
+MVP working end-to-end, verified in a browser. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted → restored on refresh. Wakes are reliable end to end: due-scan → real Agent reassessment → atomic commit → reminder merged into the conversation timeline. 48 vitest tests pass; `npm run typecheck` and `npm run build` are clean.
 
 Not yet implemented: Run Coordinator / Execution Budget ceilings, the 12-case Eval harness (spec §14), Playwright E2E. Timezone is hardcoded to `Asia/Shanghai`. In-app reminders only — no Web Push.
 
@@ -124,8 +124,10 @@ src/persistence/sqlite.ts SQLite factory (node:sqlite) + transactional, self-hea
                            the re-executed migration list).
 src/persistence/id.ts     newId(): globalThis.crypto.randomUUID — NOT node:crypto (see Gotchas).
 src/memory/repository.ts  SqliteMemoryRepository: remember/read/revise (CAS)/forget/search.
-src/memory/service.ts     MemoryService: two-click forget confirmation tokens.
+src/memory/service.ts     MemoryService: in-process, single-use, 10-minute forget confirmation tokens.
 src/memory/tools.ts       memory__search/read/remember/revise/forget AgentTool definitions.
+                           memory__forget is two-phase inside one tool: no token -> issue one and
+                           change nothing; token -> delete. Keeps the surface at exactly eight tools.
 src/wake/repository.ts    SqliteWakeRepository: schedule/cancel/claim/resolveOccurrence. resolveOccurrence
                            is the internal atomic boundary — at most one visible effect (or one silent
                            decision) per occurrence — and retires the wake to 'fired' in the same
@@ -143,6 +145,8 @@ src/wake/tools.ts         wake__list/schedule/cancel AgentTool definitions.
 src/conversation/repository.ts   SqliteConversationRepository: persisted chat history.
 src/conversation/timeline.ts     readTimeline: merges committed wake reminders (from visible_effects,
                            never double-written) into the message history in time order.
+src/conversation/transcript.ts   toAgentMessages: replays stored turns as the Agent's transcript
+                           (last 20). Without it every Run starts from zero — see Gotchas.
 src/runtime/local-runtime.ts     Wires the local-owner/default-conversation SQLite singletons used by all tools.
 src/runtime/agent-runtime.ts     Per-run Agent factory + streaming callback, used by the Route Handler.
 src/runtime/wake-loop.ts         Idempotent startup scan + 30s polling, started lazily by the GET handler.
@@ -174,4 +178,6 @@ Any future architecture must satisfy the spec's invariants (docs/GRAND_EUNUCH.md
 - **Use `newId()` from `src/persistence/id.ts`, never `import { randomUUID } from "node:crypto"`.** Anything reachable from a Route Handler gets bundled by webpack, which refuses `node:`-scheme imports with `UnhandledSchemeError` (and bare `fs`/`crypto` don't resolve either). `globalThis.crypto.randomUUID()` sidesteps it. `node:sqlite` is the exception — it must be loaded via `createRequire`, as it is in `src/persistence/sqlite.ts`.
 - **The wake loop starts lazily from the GET Route Handler, not from `instrumentation.ts`.** A root `instrumentation.ts` is the idiomatic startup hook, but webpack bundles its whole dependency graph and then can't resolve the `node:` builtins underneath SQLite. Lazy start is fine here because the server is only useful once the page has been opened, and `startLocalWakeLoop()` is idempotent.
 - **Next.js does not need `--env-file`** — it loads `.env` itself (the startup banner prints `Environments: .env`). Only the standalone `scripts/*.ts` entry points need `node --env-file=.env`.
+- **Each Run replays stored history via `toAgentMessages`, so a wrong assistant turn becomes "established fact" for later Runs.** Before this existed the Agent started every request from zero and could not honour a follow-up like "确认删除" — the two-phase forget was structurally unreachable. But replay has a cost worth knowing: in testing, one incorrect assistant reply ("这条记忆并不存在") led later Runs to answer from that claim *without calling any tool*, so the memory stayed undeletable until the conversation was cleared. Prompt guidance that a stored turn is not evidence about current state — verify with a tool — matters more here than the replay limit does.
+- **Returning `isError: true` from a tool does nothing — pi-agent-core derives the model-visible error flag solely from whether `execute()` threw.** `AgentToolResult` has no `isError` field at all; the flag on the `toolResult` message comes from `agent-loop.js`'s try/catch (`{ result, isError: false }` on success). The field survives typecheck only because `AgentTool`'s `TDetails` defaults to `any`, which disables excess-property checking — a misspelled field would be swallowed just as silently. Consequence: the spec's "state whether the side effect happened" requirement is carried **entirely by the Tool Result text**, which is why the tool tests assert on wording ("No wake was scheduled — safe to retry") rather than on a flag. Don't add `isError` to new tools expecting it to mean anything; if a tool must be flagged as failed, throw.
 - **`@ducanh2912/next-pwa` must be wired into `next.config.ts` via `withPWAInit()`** — just having it in `package.json` doesn't generate `public/sw.js`. It's disabled in development (`disable: process.env.NODE_ENV === "development"`) so `npm run dev` won't produce a service worker; check `npm run build && npm start` for the PWA/installability path.
