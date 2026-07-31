@@ -1,6 +1,12 @@
 import { NextRequest } from "next/server";
+import { readTimeline } from "../../../../../src/conversation/timeline";
 import { createLocalAgentRuntime } from "../../../../../src/runtime/agent-runtime";
-import { localConversationId, localConversationRepository } from "../../../../../src/runtime/local-runtime";
+import {
+  localConversationId,
+  localConversationRepository,
+  localPrincipalId,
+  localWakeRepository,
+} from "../../../../../src/runtime/local-runtime";
 
 export const runtime = "nodejs";
 
@@ -11,13 +17,22 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   const message = body.message.trim();
+
+  // Read the transcript before appending: this message is passed separately, and
+  // including it twice would show the Agent a duplicated final turn.
+  const history = readTimeline({
+    conversations: localConversationRepository,
+    wakes: localWakeRepository,
+    principalId: localPrincipalId,
+    conversationId: localConversationId,
+  });
   localConversationRepository.append({ conversationId: localConversationId, role: "user", content: message, createdAt: Date.now() });
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
     async start(controller): Promise<void> {
       try {
-        const response = await createLocalAgentRuntime().respond(message, (delta) => controller.enqueue(encoder.encode(delta)));
+        const response = await createLocalAgentRuntime(history).respond(message, (delta) => controller.enqueue(encoder.encode(delta)));
         localConversationRepository.append({ conversationId: localConversationId, role: "assistant", content: response, createdAt: Date.now() });
         controller.close();
       } catch (error: unknown) {

@@ -1,3 +1,4 @@
+import { newId } from "../persistence/id.js";
 import type { DatabaseSync } from "node:sqlite";
 
 export type EpistemicType = "user_statement" | "agent_inference" | "user_decision" | "system_observation";
@@ -84,7 +85,7 @@ export class SqliteMemoryRepository {
       return rowToMemory(existing);
     }
 
-    const id = crypto.randomUUID();
+    const id = newId();
     this.connection
       .prepare(
         `INSERT INTO memories (

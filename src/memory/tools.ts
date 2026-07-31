@@ -105,22 +105,70 @@ export const memoryReviseTool: AgentTool<typeof reviseParams> = {
   },
 };
 
+/** How long a forget confirmation token stays usable. Long enough for one user reply, not a session. */
+const FORGET_CONFIRMATION_TTL_MS = 10 * 60 * 1000;
+
 const forgetParams = Type.Object({
   memory_id: Type.String({ description: "The memory identifier to forget" }),
-  confirmation_token: Type.String({ description: "One-time token issued after explicit user confirmation" }),
+  confirmation_token: Type.Optional(
+    Type.String({
+      description:
+        "Omit on the first call to request a token. Pass the token back only after the user has explicitly confirmed the deletion in their own words.",
+    })
+  ),
 });
 
 export const memoryForgetTool: AgentTool<typeof forgetParams> = {
   name: "memory__forget",
   label: "Forget memory",
-  description: "Permanently forget a memory only after explicit user confirmation and a one-time confirmation token.",
+  description:
+    "Permanently forget a memory. Call once without a token to get one, ask the user to confirm, then call again with the token. Never pass a token back in the same turn you received it.",
   parameters: forgetParams,
   execute: async (_callId, params) => {
+    if (params.confirmation_token === undefined) {
+      const memory = localMemoryRepository.read({ principalId: localPrincipalId, memoryId: params.memory_id });
+      if (!memory) {
+        return {
+          content: [{ type: "text", text: "Nothing was forgotten — no memory with that id exists." }],
+          details: {},
+          isError: true,
+        };
+      }
+
+      const { token } = localMemoryService.createForgetConfirmation({
+        principalId: localPrincipalId,
+        memoryId: params.memory_id,
+        expiresAt: Date.now() + FORGET_CONFIRMATION_TTL_MS,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Nothing was forgotten yet. Show the user what would be deleted — "${memory.content}" (source: ${memory.source}) — and ask them to confirm. Once they confirm, call this tool again with confirmation_token=${token}. The token is single-use and expires in 10 minutes.`,
+          },
+        ],
+        details: { stage: "confirmation_required", memory },
+      };
+    }
+
     try {
-      localMemoryService.forget({ principalId: localPrincipalId, memoryId: params.memory_id, confirmationToken: params.confirmation_token });
+      localMemoryService.forget({
+        principalId: localPrincipalId,
+        memoryId: params.memory_id,
+        confirmationToken: params.confirmation_token,
+      });
       return { content: [{ type: "text", text: `Memory forget confirmed for id=${params.memory_id}.` }], details: {} };
     } catch (error: unknown) {
-      return { content: [{ type: "text", text: error instanceof Error ? error.message : "Memory forget failed." }], details: {}, isError: true };
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Nothing was forgotten — safe to retry after requesting a fresh token. ${error instanceof Error ? error.message : "Memory forget failed."}`,
+          },
+        ],
+        details: {},
+        isError: true,
+      };
     }
   },
 };
