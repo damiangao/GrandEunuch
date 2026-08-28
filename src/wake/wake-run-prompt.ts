@@ -13,9 +13,9 @@ Originally planned for: ${formatShanghaiLocalTime(context.plannedAt)}
 Arrived at: ${formatShanghaiLocalTime(context.arrivedAt)}
 User timezone: ${context.timezone}
 
-This wake exists because it was worth scheduling, so the default is to deliver the reminder. You may search memory to check whether the matter moved on, but finding nothing in memory is not a reason to stay silent — most wakes have no separate memory behind them.
+This wake exists because it was worth scheduling, so the default is to deliver the reminder. Before deciding, call memory__search for the matter this wake tracks (use the tracked keywords or tags). Finding nothing in memory is not a reason to stay silent — most wakes have no separate memory behind them.
 
-Stay silent only when you have positive evidence the matter is resolved, cancelled, or superseded. Absence of evidence is not such evidence.
+Stay silent only when you have positive evidence from memory that the matter is resolved, cancelled, or superseded. Absence of evidence is not such evidence. If memory shows the tracked matter was postponed to a later time, schedule a new wake for that later time with wake__schedule and respond with SILENT — postponement is a reason to re-aim, not to interrupt now.
 
 Then respond with exactly one of:
 - The reminder text to show the user. Write it as the message the user will read, and keep the wake intent's substance.

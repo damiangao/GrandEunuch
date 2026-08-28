@@ -1,4 +1,5 @@
 import { newId } from "../persistence/id.js";
+import { scrubForgottenStrings } from "../persistence/sqlite.js";
 import type { DatabaseSync } from "node:sqlite";
 
 export interface WakeIntent {
@@ -202,7 +203,7 @@ export class SqliteWakeRepository {
           input.occurrenceId,
           input.runId,
           input.decision.kind,
-          input.decision.content,
+          scrubForgottenStrings(this.connection, input.decision.content),
           input.committedAt
         );
       this.connection

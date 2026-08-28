@@ -11,10 +11,28 @@ section { flex: 1; display: flex; flex-direction: column; gap: .75rem; }
 .message.user { align-self: flex-end; background: #1f4d3b; color: #fff; }
 .message.reminder { border-left: 4px solid #b45309; }
 .message strong { font-size: .8rem; opacity: .75; }
+.message time { font-size: .72rem; opacity: .45; margin-left: .45rem; }
 .message p { margin: .3rem 0 0; white-space: pre-wrap; line-height: 1.55; }
 .empty { color: #6b6b64; text-align: center; margin-top: 4rem; }
-form { display: grid; gap: .5rem; }
-textarea { width: 100%; resize: vertical; padding: .75rem; border: 1px solid #c8c8c0; border-radius: .5rem; font: inherit; }
-button { justify-self: end; border: 0; border-radius: .5rem; background: #1f4d3b; color: #fff; padding: .6rem 1rem; font: inherit; cursor: pointer; }
+form { display: flex; align-items: flex-end; gap: .55rem; background: #fff; border: 1px solid #c8c8c0;
+       border-radius: 1.1rem; padding: .5rem .5rem .5rem .95rem; box-shadow: 0 1px 3px #00000012; }
+textarea { flex: 1; border: 0; background: transparent; resize: none; padding: .55rem 0; font: inherit;
+           outline: none; min-height: 2.5rem; max-height: 38vh; }
+textarea:focus { outline: none; }
+button { flex-shrink: 0; border: 0; border-radius: .5rem; background: #1f4d3b; color: #fff; padding: .6rem 1rem; font: inherit; cursor: pointer; }
+button.send { width: 42px; height: 42px; padding: 0; border-radius: 50%; display: grid; place-items: center; }
 button:disabled { cursor: not-allowed; opacity: .5; }
 .error { color: #b91c1c; }
+.pill { display: inline-flex; align-items: center; gap: .45rem; border: 1px solid #c8c8c0; background: #fff;
+        border-radius: 999px; padding: .45rem .9rem; font-size: .85rem; color: #1b1b19;
+        text-decoration: none; box-shadow: 0 1px 2px #0000000d; transition: border-color .15s, color .15s; }
+.pill:hover { border-color: #1f4d3b; color: #1f4d3b; }
+.md p { margin: .3rem 0; line-height: 1.6; white-space: pre-wrap; }
+.md p:first-child { margin-top: 0; }
+.md ul, .md ol { margin: .3rem 0; padding-left: 1.3rem; }
+.md code { background: #efeae2; padding: .1rem .3rem; border-radius: .3rem; font-size: .85em; }
+.md pre { background: #efeae2; padding: .6rem; border-radius: .5rem; overflow-x: auto; }
+.md pre code { background: transparent; padding: 0; }
+.md blockquote { margin: .4rem 0; padding-left: .8rem; border-left: 3px solid #b45309; color: #6b6b64; }
+.md a { color: #1f4d3b; }
+.md h1, .md h2, .md h3, .md h4 { margin: .45rem 0 .15rem; font-size: 1em; }

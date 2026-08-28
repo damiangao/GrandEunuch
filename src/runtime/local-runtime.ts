@@ -4,6 +4,7 @@ import { MemoryService } from "../memory/service.js";
 import { SqliteWakeRepository } from "../wake/repository.js";
 import { SqliteConversationRepository } from "../conversation/repository.js";
 import { LocalWakeScheduler } from "../wake/scheduler.js";
+import { createRunTraces } from "./run-traces.js";
 
 const database = createDatabase(process.env.DB_PATH ?? "./data/kokanee.sqlite");
 database.runMigrations();
@@ -14,4 +15,5 @@ export const localWakeRepository = new SqliteWakeRepository(database.connection)
 export const localConversationRepository = new SqliteConversationRepository(database.connection);
 export const localConversationId = localConversationRepository.ensureDefaultConversation("local-owner", Date.now());
 export const localWakeScheduler = new LocalWakeScheduler(localWakeRepository);
+export const localRunTraces = createRunTraces(database.connection);
 export const localPrincipalId = "local-owner";
