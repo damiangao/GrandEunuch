@@ -9,6 +9,8 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+# scripts/*.ts import ../dist/* (typecheck + runtime), so produce dist inside the image first.
+RUN npm run build:runtime
 RUN npm run build
 
 EXPOSE 3000
