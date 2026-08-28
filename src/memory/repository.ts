@@ -26,7 +26,7 @@ export interface RememberMemoryInput {
 
 export interface SearchMemoriesInput {
   principalId: string;
-  query: string;
+  query?: string;
   tags?: string[];
 }
 
@@ -144,6 +144,10 @@ export class SqliteMemoryRepository {
     this.connection.exec("BEGIN");
 
     try {
+      const existing = this.connection
+        .prepare("SELECT content FROM memories WHERE id = ? AND principal_id = ?")
+        .get(input.memoryId, input.principalId) as { content: string } | undefined;
+
       const deleted = this.connection
         .prepare("DELETE FROM memories WHERE id = ? AND principal_id = ?")
         .run(input.memoryId, input.principalId);
@@ -159,6 +163,40 @@ export class SqliteMemoryRepository {
           .run(Date.now(), input.memoryId);
         this.connection.prepare("DELETE FROM wake_memory_links WHERE memory_id = ?").run(input.memoryId);
         this.connection.prepare("DELETE FROM memory_versions WHERE memory_id = ?").run(input.memoryId);
+
+        if (existing) {
+          // §4.1/§8.6: forgetting must cover every recovery path — audit copies,
+          // conversation replay, committed visible effects, and wake contexts.
+          this.connection
+            .prepare(
+              `UPDATE run_traces SET
+                 context_assembled = replace(replace(context_assembled, ?, ?), ?, ?),
+                 tool_calls = replace(replace(tool_calls, ?, ?), ?, ?),
+                 final_output = replace(replace(final_output, ?, ?), ?, ?)
+               WHERE context_assembled LIKE '%'||?||'%'
+                  OR context_assembled LIKE '%'||?||'%'
+                  OR tool_calls LIKE '%'||?||'%'
+                  OR tool_calls LIKE '%'||?||'%'
+                  OR final_output LIKE '%'||?||'%'
+                  OR final_output LIKE '%'||?||'%'`
+            )
+            .run(
+              existing.content, "[已遗忘]", input.memoryId, "[已遗忘]",
+              existing.content, "[已遗忘]", input.memoryId, "[已遗忘]",
+              existing.content, "[已遗忘]", input.memoryId, "[已遗忘]",
+              existing.content, input.memoryId,
+              existing.content, input.memoryId,
+              existing.content, input.memoryId
+            );
+          this.connection.prepare("UPDATE conversation_messages SET content = replace(content, ?, ?)").run(existing.content, "[已遗忘]");
+          this.connection.prepare("UPDATE visible_effects SET content = replace(content, ?, ?)").run(existing.content, "[已遗忘]");
+          this.connection.prepare("UPDATE wake_intents SET intent_context = replace(intent_context, ?, ?)").run(existing.content, "[已遗忘]");
+          // Future Runtime-generated texts (assistant replies, reminders) must
+          // never re-quote this content either — see scrubForgottenStrings.
+          this.connection
+            .prepare("INSERT OR REPLACE INTO forgotten_strings (content, forgotten_at) VALUES (?, ?)")
+            .run(existing.content, Date.now());
+        }
       }
 
       this.connection.exec("COMMIT");
@@ -232,17 +270,22 @@ export class SqliteMemoryRepository {
   }
 
   search(input: SearchMemoriesInput): MemoryEntry[] {
-    const like = `%${input.query}%`;
+    const hasQuery = (input.query ?? "").trim().length > 0;
+    const like = `%${input.query ?? ""}%`;
     const hasTags = Boolean(input.tags?.length);
+    const where: string[] = ["principal_id = ?"];
+    const params: string[] = [input.principalId];
+    if (hasQuery) {
+      where.push("(LOWER(content) LIKE LOWER(?) OR LOWER(source) LIKE LOWER(?))");
+      params.push(like, like);
+    }
+    if (hasTags) {
+      where.push("EXISTS (SELECT 1 FROM json_each(tags_json) tag, json_each(?) requested WHERE tag.value = requested.value)");
+      params.push(JSON.stringify(input.tags));
+    }
     const rows = this.connection
-      .prepare(
-        `SELECT * FROM memories
-         WHERE principal_id = ?
-           AND (LOWER(content) LIKE LOWER(?) OR LOWER(source) LIKE LOWER(?))
-           ${hasTags ? "AND EXISTS (SELECT 1 FROM json_each(tags_json) tag, json_each(?) requested WHERE tag.value = requested.value)" : ""}
-         ORDER BY created_at DESC`
-      )
-      .all(...(hasTags ? [input.principalId, like, like, JSON.stringify(input.tags)] : [input.principalId, like, like])) as unknown as MemoryRow[];
+      .prepare(`SELECT * FROM memories WHERE ${where.join(" AND ")} ORDER BY created_at DESC`)
+      .all(...params) as unknown as MemoryRow[];
 
     return rows.map(rowToMemory);
   }

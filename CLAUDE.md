@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-MVP working end-to-end, verified in a browser. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted → restored on refresh. Wakes are reliable end to end: due-scan → real Agent reassessment → atomic commit → reminder merged into the conversation timeline. 48 vitest tests pass; `npm run typecheck` and `npm run build` are clean.
+MVP working end-to-end, verified in a browser. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted → restored on refresh. Wakes are reliable end to end: due-scan → real Agent reassessment → atomic commit → reminder merged into the conversation timeline. 50 vitest tests pass; `npm run typecheck` and `npm run build` are clean. Per-run tracing (`run_traces`) records context assembly, tool calls and stop states for both user and wake runs, and participates in forget scrubbing (spec §4.1). A burn-in suite (10 scenarios) and a 30-scenario eval matrix (memory/wake/product × L1/L2/L3, `scripts/evals.ts`) run against isolated per-scenario SQLite DBs with scoped tool factories.
 
-Not yet implemented: Run Coordinator / Execution Budget ceilings, the 12-case Eval harness (spec §14), Playwright E2E. Timezone is hardcoded to `Asia/Shanghai`. In-app reminders only — no Web Push.
+Not yet implemented: Run Coordinator / Execution Budget ceilings, Web Push. Timezone is hardcoded to `Asia/Shanghai`. In-app reminders only.
 
 ## Documents
 
@@ -78,6 +78,8 @@ npm run build                                   # next build (production PWA)
 npm run build:runtime                           # tsc -p tsconfig.build.json -> dist/ (Runtime-only, no Next.js)
 node --env-file=.env scripts/check-llm.ts       # verify LLM connectivity
 node --env-file=.env scripts/repl.ts            # interactive agent REPL
+node --env-file=.env scripts/burn-in.ts         # day-0 gate (needs build:runtime first)
+node --env-file=.env scripts/evals.ts           # 30-scenario matrix (needs build:runtime first)
 ```
 
 ### Running the local server
@@ -148,17 +150,27 @@ src/conversation/timeline.ts     readTimeline: merges committed wake reminders (
 src/conversation/transcript.ts   toAgentMessages: replays stored turns as the Agent's transcript
                            (last 20). Without it every Run starts from zero — see Gotchas.
 src/runtime/local-runtime.ts     Wires the local-owner/default-conversation SQLite singletons used by all tools.
+src/runtime/run-traces.ts        createRunTraces: per-run audit copy (context, tool calls, stop state).
 src/runtime/agent-runtime.ts     Per-run Agent factory + streaming callback, used by the Route Handler.
 src/runtime/wake-loop.ts         Idempotent startup scan + 30s polling, started lazily by the GET handler.
 src/agent/system-prompt.ts   System prompt + buildTrustedTimeSection (required — see Gotchas).
 src/agent/create-agent.ts    Wires model + all 8 tools + system prompt into an Agent instance.
 app/page.tsx                 Client chat UI: history, streaming, optimistic send, 15s reminder poll.
+app/memory/page.tsx          Read-only knowledge views: markdown cards / timeline / tags / time-spiral
+                             graph (SVG). Mutations stay in the Agent's hands.
+app/api/memories/route.ts    GET all memories for the /memory page.
 app/api/conversations/default/route.ts            GET the merged timeline; starts the wake loop.
 app/api/conversations/default/messages/route.ts   POST a message, streams the agent reply, persists it.
 next.config.ts            webpack extensionAlias (see Gotchas) + @ducanh2912/next-pwa setup.
 scripts/serve.sh         Background server management (start/stop/restart/status/logs).
 scripts/check-llm.ts     One-shot LLM connectivity check.
 scripts/repl.ts          Interactive terminal REPL against the agent.
+scripts/burn-in.ts       Day-0 gate: 10 scenarios (4 mechanics, no LLM; 6 agent abilities).
+scripts/evals.ts         30-scenario matrix: memory/wake/product × L1/L2/L3; isolated DBs;
+                         stub engine for mechanics, real Agent for judgment scenarios.
+scripts/eval-lib.ts      Eval harness (isolated ctx, scoped tool factories, dual wake engines).
+docs/EXPERIMENT.md       Two-week living-experiment protocol (friction log, decision table).
+docs/POSITIONING.md      Where GrandEunuch sits: the lifecycle layer (thinking doc, not spec).
 ```
 
 Any future architecture must satisfy the spec's invariants (docs/GRAND_EUNUCH.md §16) simultaneously.

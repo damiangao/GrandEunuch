@@ -1,0 +1,20 @@
+# GrandEunuch 常驻服务。账本（./data）挂载在宿主侧，容器随时可弃可换。
+services:
+  grandeunuch:
+    build: .
+    container_name: grandeunuch
+    ports:
+      - "3100:3000" # 3000 被镜场占着，对外沿用 3100
+    env_file:
+      - .env
+    environment:
+      DB_PATH: /app/data/kokanee.sqlite
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then((r)=>{if(!r.ok)throw new Error(String(r.status))}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

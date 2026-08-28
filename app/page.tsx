@@ -1,11 +1,28 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, KeyboardEvent, useEffect, useState } from "react";
+import Link from "next/link";
+import { marked } from "marked";
+import { Logo } from "./logo";
 
 interface Message {
   id: string;
   role: "user" | "assistant" | "reminder";
   content: string;
+  createdAt?: number;
+}
+
+function formatTime(epochMs: number): string {
+  const date = new Date(epochMs);
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay
+    ? date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })
+    : date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function html(markdown: string): { __html: string } {
+  // Personal, locally-owned data rendered by the user's own browser.
+  return { __html: marked.parse(markdown, { async: false }) as string };
 }
 
 export default function HomePage(): React.ReactElement {
@@ -35,17 +52,16 @@ export default function HomePage(): React.ReactElement {
     };
   }, [isRunning]);
 
-  async function sendMessage(event: FormEvent<HTMLFormElement>): Promise<void> {
-    event.preventDefault();
+  async function sendMessage(): Promise<void> {
     const content = input.trim();
     if (!content || isRunning) return;
 
     setInput("");
     setError(null);
     setIsRunning(true);
-    setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content }]);
+    setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content, createdAt: Date.now() }]);
     const assistantId = crypto.randomUUID();
-    setMessages((current) => [...current, { id: assistantId, role: "assistant", content: "" }]);
+    setMessages((current) => [...current, { id: assistantId, role: "assistant", content: "", createdAt: Date.now() }]);
 
     try {
       const response = await fetch("/api/conversations/default/messages", {
@@ -71,25 +87,59 @@ export default function HomePage(): React.ReactElement {
     }
   }
 
+  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
+    event.preventDefault();
+    void sendMessage();
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
+    // Enter sends, Shift+Enter makes a newline. Never fire while the IME is
+    // composing — that Enter belongs to confirming Chinese candidates.
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      void sendMessage();
+    }
+  }
+
   return (
     <main>
       <header>
-        <p>本地个人 Agent</p>
-        <h1>大内总管</h1>
+        <div className="brand">
+          <Logo size={34} />
+          <h1>大内总管</h1>
+        </div>
+        <nav>
+          <Link href="/memory" className="pill">
+            <svg width="14" height="14" viewBox="0 0 512 512" aria-hidden="true"><rect x="16" y="16" width="480" height="480" rx="112" fill="#D2452F"/><rect x="112" y="128" width="288" height="46" rx="23" fill="#fff"/><rect x="112" y="233" width="288" height="46" rx="23" fill="#fff"/><rect x="112" y="338" width="176" height="46" rx="23" fill="#fff"/></svg>
+            记忆
+          </Link>
+        </nav>
       </header>
       <section aria-live="polite">
         {messages.length === 0 ? <p className="empty">告诉我一个承诺、待办或想法。</p> : messages.map((message) => (
           <article className={`message ${message.role}`} key={message.id}>
             <strong>{message.role === "user" ? "你" : message.role === "reminder" ? "提醒" : "总管"}</strong>
-            <p>{message.content || (isRunning ? "正在处理…" : "")}</p>
+            {message.createdAt ? <time>{formatTime(message.createdAt)}</time> : null}
+            {message.role === "user" ? (
+              <p>{message.content}</p>
+            ) : (
+              <div className="md" dangerouslySetInnerHTML={message.content ? html(message.content) : { __html: isRunning ? "正在处理…" : "" }} />
+            )}
           </article>
         ))}
       </section>
-      <form onSubmit={sendMessage}>
-        <textarea value={input} onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setInput(event.target.value)} placeholder="输入消息…" rows={3} disabled={isRunning} />
-        <button type="submit" disabled={isRunning || !input.trim()}>{isRunning ? "处理中" : "发送"}</button>
+      <form onSubmit={handleSubmit}>
+        <textarea value={input} onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setInput(event.target.value)} onKeyDown={handleKeyDown} placeholder="输入消息…（Enter 发送 · Shift+Enter 换行）" rows={2} disabled={isRunning} />
+        <button type="submit" className="send" disabled={isRunning || !input.trim()} aria-label="发送">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 19V5" /><path d="m5 12 7-7 7 7" /></svg>
+        </button>
       </form>
       {error ? <p className="error">{error}</p> : null}
+      <style jsx>{`
+        header { display: flex; justify-content: space-between; align-items: flex-start; }
+        .brand { display: flex; gap: .65rem; align-items: center; }
+        .brand :global(svg) { margin-top: .2rem; }
+      `}</style>
     </main>
   );
 }

@@ -116,6 +116,28 @@ const migrations = [
       committed_at INTEGER NOT NULL
     );
   `,
+  `
+    CREATE TABLE IF NOT EXISTS run_traces (
+      run_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      trigger_ref TEXT,
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      stop_state TEXT,
+      final_output TEXT,
+      context_assembled TEXT,
+      tool_calls TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS run_traces_started_at
+      ON run_traces (started_at DESC);
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS forgotten_strings (
+      content TEXT PRIMARY KEY,
+      forgotten_at INTEGER NOT NULL
+    );
+  `,
 ];
 
 /**
@@ -127,12 +149,29 @@ const columnAdditions = [
   { table: "wake_intents", column: "fired_at", definition: "INTEGER" },
 ];
 
+/**
+ * Scrub every string a memory__forget has committed. Applied at write time to
+ * Runtime-generated texts (assistant replies, reminder effects) so content
+ * forgotten mid-run cannot leak back in through later messages.
+ */
+export function scrubForgottenStrings(connection: DatabaseSyncConnection, text: string): string {
+  const rows = connection.prepare("SELECT content FROM forgotten_strings").all() as unknown as Array<{ content: string }>;
+  let scrubbed = text;
+  for (const row of rows) {
+    scrubbed = scrubbed.split(row.content).join("[已遗忘]");
+  }
+  return scrubbed;
+}
+
 export function createDatabase(path: string): KokaneeDatabase {
   if (path !== ":memory:") {
     mkdirSync(dirname(path), { recursive: true });
   }
 
   const connection = new DatabaseSync(path);
+  // Wait instead of failing when another live connection (wake loop, build-time
+  // module evaluation, maintenance scripts) holds the write lock briefly.
+  connection.exec("PRAGMA busy_timeout = 5000;");
 
   return {
     connection,

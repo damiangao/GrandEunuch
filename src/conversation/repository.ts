@@ -1,4 +1,5 @@
 import { newId } from "../persistence/id.js";
+import { scrubForgottenStrings } from "../persistence/sqlite.js";
 import type { DatabaseSync } from "node:sqlite";
 
 export interface ConversationMessage {
@@ -20,7 +21,10 @@ export class SqliteConversationRepository {
   }
 
   append(input: { conversationId: string; role: ConversationMessage["role"]; content: string; createdAt: number }): ConversationMessage {
-    const message: ConversationMessage = { id: newId(), role: input.role, content: input.content, createdAt: input.createdAt };
+    // The user may legitimately re-introduce a forgotten topic; only the
+    // assistant's re-quotes are leaks and get scrubbed at write time.
+    const content = input.role === "user" ? input.content : scrubForgottenStrings(this.connection, input.content);
+    const message: ConversationMessage = { id: newId(), role: input.role, content, createdAt: input.createdAt };
     this.connection
       .prepare("INSERT INTO conversation_messages (id, conversation_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(message.id, input.conversationId, message.role, message.content, message.createdAt);

@@ -1,5 +1,6 @@
 import type { OccurrenceDecision, SqliteWakeRepository } from "./repository.js";
 import type { WakeScheduler } from "./scheduler.js";
+import type { RunTraces } from "../runtime/run-traces.js";
 
 /** The reliable Trigger facts a scheduled_wake Run is started from. */
 export interface WakeRunContext {
@@ -25,7 +26,8 @@ export class WakeRunner {
   constructor(
     private readonly repository: SqliteWakeRepository,
     private readonly scheduler: WakeScheduler,
-    private readonly agent: WakeRunAgent
+    private readonly agent: WakeRunAgent,
+    private readonly traces?: RunTraces
   ) {}
 
   async processDue(now: number): Promise<void> {
@@ -46,9 +48,10 @@ export class WakeRunner {
         intentContext: wake.intentContext,
       };
 
+      const traceRunId = this.traces ? this.traces.start("scheduled_wake", context.occurrenceId) : undefined;
       try {
         const decision = await this.agent.reassess(context);
-        this.repository.resolveOccurrence({
+        const resolution = this.repository.resolveOccurrence({
           occurrenceId: context.occurrenceId,
           wakeId: context.wakeId,
           generation: context.generation,
@@ -56,9 +59,19 @@ export class WakeRunner {
           decision,
           committedAt: Date.now(),
         });
+        if (traceRunId && this.traces) {
+          this.traces.finish(traceRunId, {
+            stopState: resolution.state,
+            finalOutput: decision.kind === "reminder" ? decision.content : undefined,
+            contextAssembled: JSON.stringify(context),
+          });
+        }
       } catch (error: unknown) {
         // A failed reassessment leaves the occurrence unresolved so a later scan
         // can retry it. Never fabricate a decision on the Agent's behalf.
+        if (traceRunId && this.traces) {
+          this.traces.finish(traceRunId, { stopState: "runtime_failure", contextAssembled: JSON.stringify(context) });
+        }
         console.error(`[wake] reassessment failed for occurrence ${context.occurrenceId}:`, error);
       }
     }

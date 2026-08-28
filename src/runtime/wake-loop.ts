@@ -1,4 +1,4 @@
-import { localWakeRepository, localWakeScheduler } from "./local-runtime.js";
+import { localRunTraces, localWakeRepository, localWakeScheduler } from "./local-runtime.js";
 import { createAgentWakeReassessor } from "../wake/agent-reassessor.js";
 import { WakeRunner } from "../wake/runner.js";
 
@@ -14,7 +14,7 @@ export function startLocalWakeLoop(): void {
   if (started) return;
   started = true;
 
-  const runner = new WakeRunner(localWakeRepository, localWakeScheduler, createAgentWakeReassessor());
+  const runner = new WakeRunner(localWakeRepository, localWakeScheduler, createAgentWakeReassessor(), localRunTraces);
   const tick = (): void => {
     void runner.processDue(Date.now()).catch((error: unknown) => {
       console.error("[wake] scan failed:", error);
