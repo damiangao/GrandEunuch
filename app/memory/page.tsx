@@ -140,7 +140,6 @@ export default function MemoryPage(): React.ReactElement {
     <main>
       <header className="row">
         <div>
-          <p>知识库 · 只读视图</p>
           <h1>记忆</h1>
         </div>
         <nav>

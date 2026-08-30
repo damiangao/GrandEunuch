@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-MVP working end-to-end, verified in a browser. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted → restored on refresh. Wakes are reliable end to end: due-scan → real Agent reassessment → atomic commit → reminder merged into the conversation timeline. 50 vitest tests pass; `npm run typecheck` and `npm run build` are clean. Per-run tracing (`run_traces`) records context assembly, tool calls and stop states for both user and wake runs, and participates in forget scrubbing (spec §4.1). A burn-in suite (10 scenarios) and a 30-scenario eval matrix (memory/wake/product × L1/L2/L3, `scripts/evals.ts`) run against isolated per-scenario SQLite DBs with scoped tool factories. Deployment is Docker (`compose.yaml`): the ledger volume-mounts at `./data`, survives host reboots, and auto-restarts on crash. A read-only `/memory` knowledge view (markdown cards / timeline / tags / star-map) browses the store without touching the Agent's write authority.
+MVP working end-to-end, verified in a browser. All eight spec tools implemented (`memory__search/read/remember/revise/forget`, `wake__list/schedule/cancel`), backed by SQLite (`node:sqlite`, survives restarts, self-healing transactional migrations). Next.js App Router PWA (`app/`) serves a local chat UI over the same Runtime — send message → streamed reply → persisted → restored on refresh. Wakes are reliable end to end: due-scan → real Agent reassessment → atomic commit → reminder merged into the conversation timeline. 50 vitest tests pass; `npm run typecheck` and `npm run build` are clean. Per-run tracing (`run_traces`) records context assembly, tool calls and stop states for both user and wake runs, and participates in forget scrubbing (spec §4.1). A burn-in suite (10 scenarios) and a 30-scenario eval matrix (memory/wake/product × L1/L2/L3, `scripts/evals.ts`) run against isolated per-scenario SQLite DBs with scoped tool factories. Deployment is Docker (`compose.yaml`): the ledger lives at `~/.grandeunuch/data` on the host — outside any Orca worktree — volume-mounted into the container; it survives host reboots, worktree cleanup, and auto-restarts on crash. Daily SQLite backup via launchd (`~/.grandeunuch/backup.sh`). A read-only `/memory` knowledge view (markdown cards / timeline / tags / star-map) browses the store without touching the Agent's write authority.
 
 Not yet implemented: Run Coordinator / Execution Budget ceilings, Web Push. Timezone is hardcoded to `Asia/Shanghai`. In-app reminders only.
 
@@ -86,7 +86,7 @@ node --env-file=.env scripts/evals.ts           # 30-scenario matrix (needs buil
 
 ### Running the server
 
-**Production/default: Docker.** The ledger volume-mounts at `./data`, `restart: unless-stopped` brings it back on reboot or crash, and health check + logs are built in:
+**Production/default: Docker.** The ledger lives at `~/.grandeunuch/data` (host, outside any worktree — a deleted worktree must never take it), `restart: unless-stopped` brings it back on reboot or crash, and health check + logs are built in:
 
 ```bash
 docker compose up -d --build     # rebuild after code changes
@@ -108,7 +108,7 @@ State lives in the gitignored `.run/` (`server.log`, `build.log`, `server.pid`,
 
 ## Environment
 
-Copy `.env.example` to `.env` (gitignored) and set:
+Deployment reads `~/.grandeunuch/.env` (outside any worktree); for host-side dev scripts copy `.env.example` to `.env` in the worktree and set:
 
 - `LLM_BASE_URL` — base URL of the LLM endpoint
 - `LLM_API_KEY` — API key
@@ -168,7 +168,7 @@ app/api/conversations/default/route.ts            GET the merged timeline; start
 app/api/conversations/default/messages/route.ts   POST a message, streams the agent reply, persists it.
 next.config.ts            webpack extensionAlias (see Gotchas) + @ducanh2912/next-pwa setup
                           (skipWaiting/clientsClaim so updates land on one reload).
-Dockerfile/compose.yaml   Container deployment: ledger volume-mounts ./data, host 3100 -> internal
+Dockerfile/compose.yaml   Container deployment: ledger volume-mounts ~/.grandeunuch/data, host 3100 -> internal
                           3000, restart unless-stopped, node-based health check.
 scripts/serve.sh         Background server management (start/stop/restart/status/logs).
 scripts/check-llm.ts     One-shot LLM connectivity check.
@@ -203,7 +203,8 @@ Any future architecture must satisfy the spec's invariants (docs/GRAND_EUNUCH.md
 - **`@ducanh2912/next-pwa` must be wired into `next.config.ts` via `withPWAInit()`** — just having it in `package.json` doesn't generate `public/sw.js`. It's disabled in development (`disable: process.env.NODE_ENV === "development"`) so `npm run dev` won't produce a service worker; check `npm run build && npm start` for the PWA/installability path.
 - **Standalone `scripts/*.ts` entry points import from `../dist/*.js`, not `../src/*.ts`** — plain node can't resolve `src/**`'s NodeNext-style `.js` sibling imports, so run `npm run build:runtime` first. (`check-llm.ts` predates this and only survives because `provider.ts` has no local `.js` imports.) Dist is built with `declaration: true`, so scripts can also import its types.
 - **styled-jsx cannot style elements rendered by child components.** `nav a { … }` in a styled-jsx block silently never matches when the `<a>` is rendered inside `<Link>` — the link falls back to default blue/underline. Either target a host element you own (`nav :global(a)`) or, better, move shared classes (`.pill`) into `globals.css` and put `className` on the `Link` itself.
-- **One writer per `data/kokanee.sqlite`.** The Docker container is the runtime; a host-side `serve.sh` instance is dev-only and must not run against the same ledger concurrently (two wake loops, split-brain debugging). SQLite `busy_timeout` (5s) absorbs brief contention like build-time module evaluation, not two live servers.
+- **The ledger and container env live outside the worktree (`~/.grandeunuch/`), not in `./data`/`.env`.** An Orca worktree cleanup once deleted the ledger out from under a still-running container: the bind mount went stale, the container stayed "healthy" (GET / worked) but every write 500'd with SQLite `attempt to write a readonly database`, and the data was unrecoverable. Daily backup: launchd agent `com.grandeunuch.backup` runs `~/.grandeunuch/backup.sh` (keep-last-14) into `~/.grandeunuch/backups/`.
+- **One writer per the ledger (`~/.grandeunuch/data/kokanee.sqlite`).** The Docker container is the runtime; a host-side `serve.sh` instance is dev-only and must not run against the same ledger concurrently (two wake loops, split-brain debugging). SQLite `busy_timeout` (5s) absorbs brief contention like build-time module evaluation, not two live servers.
 - **Docker: Docker Hub pulls can time out from this network — prefer images already in the local cache (`node:22-bookworm-slim` is there).** And `npm start` pins `--hostname 127.0.0.1`, which breaks port mapping; the container CMD overrides with `next start -H 0.0.0.0`.
 - **Eval reply assertions: keep regexes generous, prefer DB-level assertions.** Three separate incidents where the Agent's behavior was correct (perfect abstention phrased as “查不到”“删掉了”“没有找到”) but a narrow reply regex scored it as failure. Assert on persisted facts first (rows created/deleted, wake counts); treat reply text as loose secondary evidence. LLM judgment scenarios retry once — see Evaluation approach.
 - **Enter-to-send must check `event.nativeEvent.isComposing`.** The user types Chinese; during IME composition Enter confirms candidates. Intercepting it sends half-composed messages.
